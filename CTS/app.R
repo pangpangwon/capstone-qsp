@@ -1,8 +1,8 @@
 ###############################################################################
 # app.R  —  Elagolix QSP Model  ·  Interactive Shiny Dashboard
 # -----------------------------------------------------------------------
-# 모델 코어는 _run_validation.R 에서 source() 로 로드
-# (predict_E2, make_params, make_init, qsp_ode, run_sim, at_month)
+# Model core: faithful R port of MetrumRG OpenBoneMin.cpp
+# Stodtmann et al. (2021) Clin Transl Sci. 14:1611-1619
 ###############################################################################
 
 library(shiny)
@@ -13,16 +13,10 @@ library(dplyr)
 library(tidyr)
 library(DT)
 
-# ── 모델 코어 로드 (실행 코드 제외, 함수만 사용) ──────────────────────────
-# _run_validation.R 의 6~13번 섹션(시나리오 자동 실행)은 source 시 실행되므로
-# 함수만 별도로 가져오기 위해 여기서 직접 정의하지 않고 source 후
-# 필요한 전역 객체만 사용한다.
-# 아래는 _run_validation.R 섹션 1~5 (함수 정의부)만 재사용하는 방식이다.
-
-# ---- 상수 -----------------------------------------------------------------
+# ── Constants ────────────────────────────────────────────────────────────────
 HOURS_PER_MONTH <- 730.5
 
-# ---- 모듈 A : Dose → E2 ---------------------------------------------------
+# ── Module A : Dose -> E2 (Scaled Logistic, Eq.3) ───────────────────────────
 dose_e2_params <- list(slope = 0.00894, logE2max = 5.20, logE2min = 2.14)
 
 predict_E2 <- function(daily_dose, p = dose_e2_params) {
@@ -33,39 +27,71 @@ predict_E2 <- function(daily_dose, p = dose_e2_params) {
 
 E2_baseline <- predict_E2(0)
 
-# ---- 모듈 B : 파라미터 / 초기조건 / ODE ------------------------------------
+# ── Module B : Parameters (faithful to OpenBoneMin.cpp) ──────────────────────
 make_params <- function() {
   list(
     OBtot0=0.00501324, k1=6.24e-6, k2=0.112013, k3=6.24e-6, k4=0.112013,
     kO=15.8885, kb=0.000605516, Pic0=0.228142,
-    FracOBfast=0.797629, Frackb=0.313186,
+    FracOBfast=0.797629, Frackb=0.313186, Da=0.7/24,
+    # TGF-beta
     OBtgfGAM=0.0111319, koutTGF0=2.98449e-5, koutTGFGam=0.919131,
     OCtgfGAM=0.593891,
-    kinOCgam=8.53065, EmaxPicOC=1.9746, FracPicOC=0.878215,
-    PicOCgam=1.0168, MOCratioGam=0.603754, LsurvOCgam=3.0923,
-    LsurvOCCgam=3.09023,
+    # ROB differentiation
     EmaxPicROB=3.9745, PicROBgam=1.80968, FracPicROB=0.883824,
+    # OB differentiation
     PicOBgam=0.122313, FracPicOB=0.000244818, EmaxPicOB=0.251636,
-    CaDay=88, OralCa=24.055/24, OralPhos=10.5/24, F12=0.7,
-    V1=14, Da=0.7/24, Reabs50=1.57322,
-    kout_PTH=100/14, PTout=1.604e-4, opgPTH50=3.85,
-    AlphOHgam=0.111241, CtriolPTgam=12.5033, CtriolMax=4.1029, CtriolMin=0.9,
-    E0RANKL=3.80338, EmaxL=0.469779, koutL=0.00293273,
-    kinRNKgam=0.151825, koutRNK=0.00323667,
-    RUNX20=10, RX2Kout0=0.693, E0rx2Kout=0.125, EmaxPTHRX2x=5,
+    # OB apoptosis (TGF-beta -> kbprime)
+    PicOBgamkb=2.92375, MultPicOBkb=3.11842, FracPic0kb=0.764028,
+    E0RUNX2kbEffFACT=1.01, RUNkbGAM=3.81644, RUNkbMaxFact=0.638114,
+    # OC
+    E0Meff=0.388267, EmaxMeffOC=3.15667, kinOCgam=8.53065,
+    EmaxPicOC=1.9746, FracPicOC=0.878215, PicOCgam=1.0168,
+    MOCratioGam=0.603754,
+    # OC survival
+    E0RANKL=3.80338, EmaxL=0.469779, LsurvOCgam=3.09023, LsurvOCCgam=3.0923,
+    # Ca/Phos homeostasis
+    CaDay=88.0, V1=14.0,
+    FracJ14=0.107763, J14OCmax=0.543488, J14OCgam=1.6971,
+    FracJ15=0.114376, k14a=2.44437e-5, HApMRT=3.60609,
+    # Oral Ca/Phos
+    OralCa=24.055/24, OralPhos=10.5/24, F12=0.7,
+    # Gut Ca absorption
+    T28=0.9, T310=0.105929, T81=0.75, T87=0.0495,
+    T77=0.909359, T80=4.0, T43=1.03856, T45=3.85, T84=0.25,
+    # Renal Ca
+    Reabs50=1.57322, T16=1.06147, maxTmESTkid=0.923737,
+    T7=2.0, T9=90.0, T70=0.01, T71=0.03,
+    # Calcitriol / 1,25(OH)2D
+    T33=0.003, T34=0.037, T35=90.0, CaPOgam=1.0,
+    AlphOHgam=0.111241, T64=0.05, T65=6.3, T67=1.54865, T69=0.10,
+    CtriolPTgam=12.5033, CtriolMax=4.1029, CtriolMin=0.9,
+    # Phosphate effects
+    ScaEffGam=0.9, PhosEff0=1.52493, PhosEff50=1.3021,
+    PhosEffGam=8.25229, PO4inhPTHgam=0.0,
+    # Phosphate fluxes
+    T46=1.142, T49=51.8, T52=0.365, T55=0.019268,
+    # PTH
+    kout=100/14, PTout=1.604e-4, T58=6249.09, T59=11.7387, T61=96.25,
+    # RANKL / OPG
+    koutL=0.00293273, kinRNKgam=0.151825, koutRNK=0.00323667,
+    opgPTH50=3.85, EmaxLpth=1.30721, OsteoEffectGam=0.173833,
+    # Intracellular signaling
+    RUNX20=10.0, RX2Kout0=0.693, E0rx2Kout=0.125, EmaxPTHRX2x=5.0,
     E0crebKin=0.5, EmaxPTHcreb=3.39745, crebKout=0.00279513, bcl2Kout=0.693,
+    # BMD
     koutBMDls=0.000397, gamOB=0.0793, gamOCls=0.14,
-    ESTON=1, koutEST=0.05776227,
+    # Estrogen extension
+    ESTON=0.0, koutEST=0.05776227,
     tgfbGAM=0.0374, tgfbactGAM=0.045273, robGAM=0.16, obGAM=0.000012,
-    E2scalePicB1=1.16832e-5, maxTmESTkid=0.923737,
-    Smax=8, Smin=0.2, gamS=3, GFR=6,
-    TPmaxCA=2.15, CaPset=32.9, CaFrac=0.5, T85_base=0.25,
-    kinB0=126, T69_base=0.1, T64_base=1,
-    PhosKid=0.8, IntraPO_kel=0.01, IntraPO_kin=32.26,
-    HApForm=0.001, HApResorb=0.001
+    E2scalePicB1=1.16832e-5,
+    # GFR
+    GFR0=100/16.667,
+    # Denosumab (unused)
+    kdenosl=2.0e-06
   )
 }
 
+# ── Initial Conditions (31 states, matches OpenBoneMin.cpp) ──────────────────
 make_init <- function(p) {
   L0 <- 0.4; RNK0 <- 10; O0 <- 4
   c(PTH=53.9, S=0.5, PTmax=1, B=1260, AOH=126,
@@ -83,83 +109,236 @@ make_init <- function(p) {
     EST=1, BMDls=1)
 }
 
+# ── ODE System (faithful port of OpenBoneMin.cpp [ODE] block) ────────────────
 qsp_ode <- function(t, y, p) {
   with(as.list(c(y, p)), {
-    OB0<-OBtot0; OC0<-0.00115398; ROB0<-0.00104122
-    L0<-0.4; RNK0<-10; O0<-4; PTH0<-53.9; B0<-1260; P0<-32.9
-    M0<-k3*RNK0*L0/k4; RX20v<-RUNX20
-    OB<-OBfast+OBslow; EST_s<-max(EST,1e-6)
 
-    kinEST<-koutEST; dEST<-(kinEST-koutEST*EST)*ESTON
-    CaRatio<-P/P0
-    Sfun<-Smin+(Smax-Smin)/(1+CaRatio^gamS)
-    SPTH<-Sfun*kout_PTH*PTH0; dPTH<-SPTH-kout_PTH*PTH
-    dS<-0; dPTmax<-0; PTHr<-PTH/PTH0
-    SE<-kinB0*PTHr^AlphOHgam; dAOH<-SE-T64_base*AOH
-    dB<-AOH-T69_base*B; Br<-B/B0
-    T85<-T85_base*(CtriolMin+(CtriolMax-CtriolMin)*Br^CtriolPTgam/(1+Br^CtriolPTgam))
-    J40<-Da*Tgut; dTgut<-OralCa*T85-J40
-    ESTkid<-max(1+maxTmESTkid*(EST_s-1)*ESTON,0.1)
-    TPeff<-TPmaxCA*ESTkid; CaFilt<-GFR*CaFrac*P/V1
-    T36<-CaFilt*TPeff/(Reabs50+CaFrac*P/V1)
-    dRkid<-T36*(1-Rkid)-CaFilt*Rkid*0.01
-    Jurine<-CaFilt*(1-Rkid)
-    J14<-0.02*Q; J15<-0.02*P*3
-    J14a<-HApResorb*(OC/OC0)*Q; J15a<-HApForm*(OB/OB0)*P
-    dP<-(J14-J15-Jurine+J40+J14a-J15a)/V1
-    dQ<-J15-J14+J14a-J15a; dQbone<-J15a-J14a
-    dUCA<-Jurine; dHAp<-HApForm*(OB/OB0)-HApResorb*(OC/OC0)
-    J53<-Da*PhosGut; J41<-OralPhos*F12; J42<-PhosKid*ECCPhos
-    J48<-0.001*ECCPhos; J54<-IntraPO_kin*ECCPhos/(ECCPhos+10)
-    J56<-IntraPO_kel*IntraPO
-    dECCPhos<-J41+J53-J42-J48-J54+J56
-    dPhosGut<-OralPhos*F12-J53; dIntraPO<-J54-J56
-    ptf<-PTHr/(1+PTHr)
-    RX2Kin<-RX2Kout0*RX20v*(1+E0rx2Kout+EmaxPTHRX2x*ptf)
-    RX2Kout<-RX2Kout0*(1+E0rx2Kout+EmaxPTHRX2x*ptf)
-    dRX2<-RX2Kin-RX2Kout*RX2
-    crebKin<-crebKout*10*(E0crebKin+EmaxPTHcreb*ptf)
-    dCREB<-crebKin-crebKout*CREB
-    dBCL2<-bcl2Kout*(CREB/10)*(RX2/RX20v)*100-bcl2Kout*BCL2
-    kinTGF<-koutTGF0*Pic0*1000
-    koutTGFeff<-koutTGF0*(OC/OC0)^koutTGFGam
-    dTGFB<-kinTGF*(OB/OB0)^OBtgfGAM*((1/EST_s)^tgfbGAM*ESTON+(1-ESTON))-
-      koutTGFeff*TGFB*(EST_s^tgfbactGAM*ESTON+(1-ESTON))
-    koutTGFact<-koutTGF0*1000
-    dTGFBact<-koutTGFeff*TGFB*(EST_s^tgfbactGAM*ESTON+(1-ESTON))-koutTGFact*TGFBact
-    PicR<-TGFBact/Pic0
-    kinL<-koutL*L0*(E0RANKL+EmaxL*ptf)/(E0RANKL+EmaxL*0.5)
-    dL<-kinL-koutL*L-k1*Oopg*L+k2*Ncmplx-k3*RNK*L+k4*Mcmplx
-    kinRNK<-koutRNK*RNK0*(TGFBact/Pic0)^kinRNKgam
-    dRNK<-kinRNK-koutRNK*RNK-k3*RNK*L+k4*Mcmplx
-    PTHinhOPG<-opgPTH50/(opgPTH50+PTH)
-    PTHinhOPG0<-opgPTH50/(opgPTH50+PTH0)
-    pO<-kO*O0*PTHinhOPG/PTHinhOPG0*(EST_s^0.05*ESTON+(1-ESTON))
-    dOopg<-pO-k1*Oopg*L+k2*Ncmplx-kO*Oopg
-    dMcmplx<-k3*RNK*L-k4*Mcmplx; dNcmplx<-k1*Oopg*L-k2*Ncmplx
-    PicROB<-1+EmaxPicROB*FracPicROB*PicR^PicROBgam/(1+FracPicROB*PicR^PicROBgam)
-    PicROB0<-1+EmaxPicROB*FracPicROB/(1+FracPicROB)
-    ROBin<-kb*ROB0*PicROB/PicROB0
-    ESTrob<-(1/EST_s)^robGAM*ESTON+(1-ESTON)
-    dROB1<-ROBin*ESTrob-kb*ROB1
-    PicOB<-1-EmaxPicOB*FracPicOB*PicR^PicOBgam/(1+FracPicOB*PicR^PicOBgam)
-    PicOB0<-1-EmaxPicOB*FracPicOB/(1+FracPicOB)
-    PicOB<-max(PicOB,1e-4); PicOB0<-max(PicOB0,1e-4)
-    Drate<-kb*ROB1; bigDb<-Drate*PicOB/PicOB0
-    ESTob<-EST_s^obGAM*ESTON+(1-ESTON)
-    kbfast<-kb*10; kbslow<-kb*0.5
-    dOBfast<-bigDb*FracOBfast*Frackb*ESTob-kbfast*OBfast
-    dOBslow<-bigDb*(1-FracOBfast)*Frackb-kbslow*OBslow
-    Mr<-max(Mcmplx/M0,1e-6); Lr<-max(L/L0,1e-6)
-    PicOC<-1+EmaxPicOC*FracPicOC*PicR^PicOCgam/(1+FracPicOC*PicR^PicOCgam)
-    PicOC0<-1+EmaxPicOC*FracPicOC/(1+FracPicOC)
-    kinOC2<-kb*OC0*Mr^MOCratioGam*PicOC/PicOC0
-    BCL2r<-max(BCL2/100,1e-6)
-    KLSoc<-kb*(1/Lr)^LsurvOCgam/BCL2r^0.1
-    dOC<-kinOC2-KLSoc*OC
-    OBr<-max(OB/OB0,1e-6); OCr<-max(OC/OC0,1e-6)
-    kinBMDls<-koutBMDls
-    dBMDls<-kinBMDls*OBr^gamOB-koutBMDls*OCr^gamOCls*BMDls
+    # Baseline reference values
+    OB0 <- OBtot0; OC0 <- 0.00115398; ROB0 <- 0.00104122
+    L0 <- 0.4; RNK0 <- 10; O0 <- 4; PTH0 <- 53.9; B0 <- 1260; P0 <- 32.9
+    M0 <- k3*RNK0*L0/k4
+    OBfast0 <- OBtot0*FracOBfast; OBslow0 <- OBtot0*(1-FracOBfast)
+    TGFBact0 <- Pic0; TGFB0 <- Pic0*1000; RX20v <- RUNX20
+    Q0 <- 100; Qbone0 <- 24900; T0 <- 1.58471
+    Calcitriol0 <- B0/V1
+
+    OB <- OBfast + OBslow
+    EST_s <- max(EST, 1e-6)
+
+    # Concentrations
+    CaConc0 <- P0/V1; PTHconc0 <- PTH0/V1
+    PTHconc <- PTH/V1; CaConc <- P/V1
+    C1 <- P/V1; C2 <- ECCPhos/V1; C8 <- B/V1
+
+    # Derived parameters from SS
+    T13 <- (CaDay/24)/Q0
+    T15 <- CaDay/(CaConc0*V1*24)
+    J14OC50 <- exp(log((J14OCmax*OC0^J14OCgam/T13) - OC0^J14OCgam)/J14OCgam)
+    OCeqn <- (J14OCmax*OC^J14OCgam)/(OC^J14OCgam + J14OC50^J14OCgam)
+    kinRNKval <- (koutRNK*RNK0 + k3*RNK0*L0 - k4*M0)/TGFBact0^kinRNKgam
+
+    MOCratio <- Mcmplx/max(OC, 1e-15)
+    MOCratio0 <- M0/OC0
+    MOCratioEff <- (MOCratio/MOCratio0)^MOCratioGam
+
+    # J14: Ca from bone to plasma
+    J14OCdepend <- OCeqn*Q0*FracJ14*MOCratioEff
+    J14val <- T13*Q0*(1-FracJ14) + J14OCdepend
+    J41 <- 0.464*J14val
+
+    bigDb <- kb*OB0*Pic0/ROB0
+
+    # TGF-beta
+    kinTGF <- koutTGF0*TGFB0
+    koutTGF_v <- koutTGF0*(TGFB/TGFB0)^koutTGFGam
+    koutTGFact_v <- koutTGF0*1000
+    koutTGFeqn <- koutTGF_v*TGFB*(OC/OC0)^OCtgfGAM
+
+    # ROB differentiation (PicROB)
+    E0PicROB <- FracPicROB*Pic0
+    EC50PicROBp <- (EmaxPicROB*TGFBact0^PicROBgam/(Pic0-E0PicROB)) - TGFBact0^PicROBgam
+    EC50PicROB <- exp(log(EC50PicROBp)/PicROBgam)
+    Dr <- kb*OB0/Pic0
+    PicROB_v <- E0PicROB + EmaxPicROB*TGFBact^PicROBgam/(TGFBact^PicROBgam + EC50PicROB^PicROBgam)
+    ROBin <- Dr*PicROB_v
+
+    # OB differentiation (PicOB)
+    E0PicOB <- FracPicOB*Pic0
+    EC50PicOBp <- (EmaxPicOB*TGFBact0^PicOBgam/(Pic0-E0PicOB)) - TGFBact0^PicOBgam
+    EC50PicOB <- exp(log(EC50PicOBp)/PicOBgam)
+    PicOB_v <- E0PicOB + EmaxPicOB*TGFBact^PicOBgam/(TGFBact^PicOBgam + EC50PicOB^PicOBgam)
+    KPT <- bigDb/PicOB_v
+
+    # OC differentiation (MeffOC)
+    EC50MeffOC <- exp(log(M0^kinOCgam*EmaxMeffOC/(1-E0Meff) - M0^kinOCgam)/kinOCgam)
+    MeffOC <- E0Meff + EmaxMeffOC*Mcmplx^kinOCgam/(Mcmplx^kinOCgam + EC50MeffOC^kinOCgam)
+    kinOC2 <- Da*Pic0*MeffOC*OC0
+
+    # OC PicOC
+    E0PicOC <- FracPicOC*Pic0
+    EC50PicOCp <- (EmaxPicOC*TGFBact0^PicOCgam/(Pic0-E0PicOC)) - TGFBact0^PicOCgam
+    EC50PicOC <- exp(log(EC50PicOCp)/PicOCgam)
+    PicOC_v <- E0PicOC + EmaxPicOC*TGFBact^PicOCgam/(TGFBact^PicOCgam + EC50PicOC^PicOCgam)
+
+    # OC survival (LsurvOC)
+    PiL0 <- (k3/k4)*L0; PiL <- Mcmplx/10
+    EC50survInPar <- (E0RANKL-EmaxL)*PiL0^LsurvOCgam/(E0RANKL-1) - PiL0^LsurvOCgam
+    EC50surv <- exp(log(EC50survInPar)/LsurvOCgam)
+    LsurvOC <- E0RANKL - (E0RANKL-EmaxL)*PiL^LsurvOCgam/(PiL^LsurvOCgam + EC50surv^LsurvOCgam)
+    KLSoc <- Da*PicOC_v*LsurvOC
+
+    # 1-alpha-hydroxylase
+    T66 <- (T67^AlphOHgam + PTHconc0^AlphOHgam)/PTHconc0^AlphOHgam
+
+    # Hydroxyapatite
+    kLShap <- 1/HApMRT; kHApIn <- kLShap/OB0
+
+    # Bone Ca exchange (slow)
+    k15a <- k14a*Qbone0/Q0
+    J14a <- k14a*Qbone; J15a <- k15a*Q
+
+    # J15: Ca plasma to bone
+    J15val <- T15*P*(1-FracJ15) + T15*P*FracJ15*HAp
+    J42 <- 0.464*J15val
+
+    # RANKL production
+    kinLbase <- koutL*L0
+    OsteoEffect <- (OB/OB0)^OsteoEffectGam
+    PTH50 <- EmaxLpth*PTHconc0 - PTHconc0
+    LpthEff <- EmaxLpth*PTHconc/(PTH50*OsteoEffect + PTHconc)
+    kinL_v <- kinLbase*OsteoEffect*LpthEff
+
+    # OPG production
+    pObase <- kO*O0
+    pO_v <- pObase*(ROB1/ROB0)*((PTHconc + opgPTH50*(ROB1/ROB0))/(2*PTHconc))
+
+    # RUNX2, CREB, BCL2
+    RX2Kin <- RX2Kout0*RX20v
+    EC50PTHRX2x <- (EmaxPTHRX2x*PTHconc0/(RX2Kout0-E0rx2Kout)) - PTHconc0
+    RX2Kout_v <- E0rx2Kout + EmaxPTHRX2x*PTHconc/(PTHconc + EC50PTHRX2x)
+    EC50PTHcreb <- (EmaxPTHcreb*PTHconc0/(1-E0crebKin)) - PTHconc0
+    crebKin0 <- crebKout*10
+    crebKin_v <- crebKin0*(E0crebKin + EmaxPTHcreb*PTHconc/(PTHconc + EC50PTHcreb))
+
+    # Phosphate effects
+    PO4inhPTH <- (C2/1.2)^PO4inhPTHgam
+    PhosEffTop <- (PhosEff0-1)*(1.2^PhosEffGam + PhosEff50^PhosEffGam)
+    PhosEffBot <- PhosEff0*1.2^PhosEffGam
+    PhosEffMax <- PhosEffTop/PhosEffBot
+    PhosEff_v <- PhosEff0 - PhosEffMax*PhosEff0*C2^PhosEffGam/(C2^PhosEffGam + PhosEff50^PhosEffGam)
+    PhosEffect <- ifelse(C2 > 1.2, PhosEff_v, 1.0)
+
+    T68 <- T66*PTHconc^AlphOHgam/(T67^AlphOHgam*PO4inhPTH + PTHconc^AlphOHgam)
+    SE <- T65*T68*PhosEffect
+
+    # Calcitriol-dependent Ca absorption
+    T36 <- T33 + (T34-T33)*C8^CaPOgam/(T35^CaPOgam + C8^CaPOgam)
+    T37 <- T34 - (T34-T33)*C8^CaPOgam/(T35^CaPOgam + C8^CaPOgam)
+
+    # Renal calcium handling
+    CaFilt <- 0.6*0.5*GFR0*CaConc
+    mtmEST <- (1-maxTmESTkid)/(1-0.1)
+    tmEST <- 1 - mtmEST + mtmEST*EST_s
+    ReabsMax <- tmEST*(0.3*GFR0*CaConc0 - 0.149997)*(Reabs50 + CaConc0)/CaConc0
+    T17 <- PTHconc0*T16 - PTHconc0
+    ReabsPTHeff <- T16*PTHconc/(PTHconc + T17)
+    CaReabsActive <- ReabsMax*C1/(Reabs50 + C1)*ReabsPTHeff
+    T20 <- CaFilt - CaReabsActive
+    T10 <- T7*C8/(C8 + T9)
+    J27a <- (2-T10)*T20
+    J27 <- max(J27a, 0)
+
+    ScaEff <- (CaConc0/CaConc)^ScaEffGam
+    T72 <- 90*ScaEff; T73 <- T71*(C8-T72)
+    T74 <- (exp(T73)-exp(-T73))/(exp(T73)+exp(-T73))
+    T75 <- T70*(0.85*(1+T74)+0.15)
+    T76 <- T70*(0.85*(1-T74)+0.15)
+
+    # Phosphate renal
+    T47 <- T46*0.88*GFR0
+    J48a <- 0.88*GFR0*C2 - T47; J48 <- max(J48a, 0)
+    J53 <- T52*PhosGut; J54 <- T49*C2; J56 <- T55*IntraPO
+
+    # OB apoptosis: PicOBkb -> kbprime -> kbfast, kbslow
+    E0PicOBkb <- MultPicOBkb*Pic0
+    EmaxPicOBkb_v <- FracPic0kb*Pic0
+    EC50PicOBparenKb <- ((E0PicOBkb-EmaxPicOBkb_v)*TGFBact0^PicOBgamkb)/(E0PicOBkb-Pic0) - TGFBact0^PicOBgamkb
+    EC50PicOBkb <- exp(log(EC50PicOBparenKb)/PicOBgamkb)
+    PicOBkb <- E0PicOBkb - (E0PicOBkb-EmaxPicOBkb_v)*TGFBact^PicOBgamkb/(TGFBact^PicOBgamkb + EC50PicOBkb^PicOBgamkb)
+    PicOBkbEff <- (PicOBkb/Pic0)*(1/EST_s^E2scalePicB1)
+
+    E0RUNX2kbEff <- E0RUNX2kbEffFACT*kb
+    RUNX2_v <- ifelse(BCL2 > 105, BCL2 - 90, 10)
+    RUNkbMax <- E0RUNX2kbEff*RUNkbMaxFact
+    INparen_kb <- (RUNkbMax*RUNX20^RUNkbGAM)/(E0RUNX2kbEff-kb) - RUNX20^RUNkbGAM
+    RUNkb50 <- exp(log(INparen_kb)/RUNkbGAM)
+    RUNX2kbPrimeEff <- RUNkbMax*RUNX2_v^RUNkbGAM/(RUNX2_v^RUNkbGAM + RUNkb50^RUNkbGAM)
+
+    kbprime <- E0RUNX2kbEff*PicOBkbEff - RUNX2kbPrimeEff
+    kbslow_v <- kbprime*Frackb
+    kbfast_v <- (kb*OB0 + kbslow_v*OBfast0 - kbslow_v*OB0)/OBfast0
+    Frackb2 <- kbfast_v/kbprime
+
+    # Gut calcium
+    T29 <- (T28*T0 - T310*T0)/T310
+    T31 <- T28*Tgut/(Tgut + T29)
+    T83 <- Rkid/0.5
+    J40 <- T31*Tgut*T83/(Tgut + T81) + T87*Tgut
+    T85Rpart <- Rkid^T80/(Rkid^T80 + T81^T80)
+    T85_v <- T77*T85Rpart
+
+    # Calcitriol equations
+    INparenCtriol <- ((CtriolMax-CtriolMin)*Calcitriol0^CtriolPTgam)/(CtriolMax-1) - Calcitriol0^CtriolPTgam
+    Ctriol50 <- exp(log(INparenCtriol)/CtriolPTgam)
+    CtriolPTeff <- CtriolMax - (CtriolMax-CtriolMin)*C8^CtriolPTgam/(C8^CtriolPTgam + Ctriol50^CtriolPTgam)
+    PTin <- PTout*CtriolPTeff
+
+    # PTH secretion (complex sigmoid)
+    FCTD <- (S/0.5)*PTmax
+    INparenCa <- (T58-T61)*CaConc0^T59/(T58-385) - CaConc0^T59
+    T60 <- exp(log(INparenCa)/T59)
+    T63 <- T58 - (T58-T61)*CaConc^T59/(CaConc^T59 + T60^T59)
+    SPTH <- T63*FCTD
+
+    # RANK kinetics
+    kinRNK_v <- kinRNKval*TGFBact^kinRNKgam
+
+    # Estrogen
+    kinEST <- koutEST
+    dEST <- (kinEST - koutEST*EST)*ESTON
+
+    #=============== DIFFERENTIAL EQUATIONS ===============
+
+    dPTH <- SPTH - kout*PTH
+    dS <- (1-S)*T76 - S*T75
+    dPTmax <- PTin - PTout*PTmax
+    dB <- AOH - T69*B
+    dAOH <- SE - T64*AOH
+    dP <- J14val - J15val - J27 + J40
+    dECCPhos <- J41 - J42 - J48 + J53 - J54 + J56
+    dTgut <- OralCa*T85_v - J40
+    dRkid <- T36*(1-Rkid) - T37*Rkid
+    dHAp <- kHApIn*OB - kLShap*HAp
+    dPhosGut <- OralPhos*F12 - J53
+    dIntraPO <- J54 - J56
+    dQ <- J15val - J14val + J14a - J15a
+    dQbone <- J15a - J14a
+    dUCA <- J27
+    dROB1 <- ROBin*(1/EST_s)^robGAM - KPT*ROB1
+    dOBfast <- (bigDb/PicOB_v)*ROB1*FracOBfast*Frackb2 - kbfast_v*OBfast
+    dOBslow <- (bigDb/PicOB_v)*ROB1*(1-FracOBfast)*Frackb - kbslow_v*OBslow
+    dOC <- kinOC2 - KLSoc*OC
+    dL <- kinL_v - koutL*L - k1*Oopg*L + k2*Ncmplx - k3*RNK*L + k4*Mcmplx
+    dRNK <- kinRNK_v - koutRNK*RNK - k3*RNK*L + k4*Mcmplx
+    dOopg <- pO_v - k1*Oopg*L + k2*Ncmplx - kO*Oopg
+    dMcmplx <- k3*RNK*L - k4*Mcmplx
+    dNcmplx <- k1*Oopg*L - k2*Ncmplx
+    dTGFB <- kinTGF*(OB/OB0)^OBtgfGAM*(1/EST_s)^tgfbGAM - koutTGFeqn*EST_s^tgfbactGAM
+    dTGFBact <- koutTGFeqn*EST_s^tgfbactGAM - koutTGFact_v*TGFBact
+    dRX2 <- RX2Kin - RX2Kout_v*RX2
+    dCREB <- crebKin_v - crebKout*CREB
+    dBCL2 <- bcl2Kout*CREB*RX2 - bcl2Kout*BCL2
+    dBMDls <- koutBMDls*(OB/OB0)^gamOB - koutBMDls*(OC/OC0)^gamOCls*BMDls
 
     list(c(dPTH,dS,dPTmax,dB,dAOH,dP,dECCPhos,dTgut,dRkid,
            dHAp,dPhosGut,dIntraPO,dQ,dQbone,dUCA,
@@ -168,14 +347,14 @@ qsp_ode <- function(t, y, p) {
            dTGFB,dTGFBact,dRX2,dCREB,dBCL2,dEST,dBMDls),
          OB_total=OBfast+OBslow,
          CTX_pct=(OC/OC0-1)*100,
-         P1NP_pct=((OBfast+OBslow)/OB0-1)*100,
+         P1NP_pct=(OB/OB0-1)*100,
          BMD_pct=(BMDls-1)*100)
   })
 }
 
-# ---- run_sim (from _run_validation.R) -------------------------------------
+# ── run_sim ──────────────────────────────────────────────────────────────────
 run_sim <- function(dose_mg, tx_months, fu_months=0, ss_months=120) {
-  p  <- make_params(); y0 <- make_init(p)
+  p <- make_params(); y0 <- make_init(p)
   ss_hr <- ss_months*HOURS_PER_MONTH
   tx_hr <- tx_months*HOURS_PER_MONTH
   fu_hr <- fu_months*HOURS_PER_MONTH
@@ -184,32 +363,33 @@ run_sim <- function(dose_mg, tx_months, fu_months=0, ss_months=120) {
   sol_ss <- ode(y0, seq(0,ss_hr,by=24), qsp_ode, p,
                 method="lsoda", atol=1e-8, rtol=1e-8, maxsteps=1e5)
   n_state <- length(y0)
-  y_ss <- sol_ss[nrow(sol_ss), 2:(n_state+1)]; names(y_ss)<-names(y0)
-  OB_ss<-as.numeric(y_ss["OBfast"]+y_ss["OBslow"])
-  OC_ss<-as.numeric(y_ss["OC"]); BMD_ss<-as.numeric(y_ss["BMDls"])
+  y_ss <- sol_ss[nrow(sol_ss), 2:(n_state+1)]; names(y_ss) <- names(y0)
+  OB_ss <- as.numeric(y_ss["OBfast"]+y_ss["OBslow"])
+  OC_ss <- as.numeric(y_ss["OC"]); BMD_ss <- as.numeric(y_ss["BMDls"])
 
-  y_tx<-y_ss; y_tx["EST"]<-EST_tx
-  ev_tx<-function(t,y,parms){y["EST"]<-EST_tx;y}
-  times_tx<-seq(0,tx_hr,by=24)
-  sol_tx<-ode(y_tx,times_tx,qsp_ode,p,method="lsoda",
-              atol=1e-8,rtol=1e-8,maxsteps=1e5,
-              events=list(func=ev_tx,time=times_tx))
-  res<-as.data.frame(sol_tx)
+  y_tx <- y_ss; y_tx["EST"] <- EST_tx
+  ev_tx <- function(t,y,parms){y["EST"] <- EST_tx; y}
+  times_tx <- seq(0,tx_hr,by=24)
+  sol_tx <- ode(y_tx, times_tx, qsp_ode, p, method="lsoda",
+                atol=1e-8, rtol=1e-8, maxsteps=1e5,
+                events=list(func=ev_tx, time=times_tx))
+  res <- as.data.frame(sol_tx)
 
-  if(fu_months>0){
-    y_fu<-sol_tx[nrow(sol_tx), 2:(n_state+1)]; names(y_fu)<-names(y0); y_fu["EST"]<-1
-    sol_fu<-ode(y_fu,seq(0,fu_hr,by=24),qsp_ode,p,
-                method="lsoda",atol=1e-8,rtol=1e-8,maxsteps=1e5)
-    res_fu<-as.data.frame(sol_fu); res_fu$time<-res_fu$time+tx_hr
-    res<-rbind(res,res_fu[-1,])
+  if(fu_months > 0){
+    y_fu <- sol_tx[nrow(sol_tx), 2:(n_state+1)]; names(y_fu) <- names(y0)
+    y_fu["EST"] <- 1
+    sol_fu <- ode(y_fu, seq(0,fu_hr,by=24), qsp_ode, p,
+                  method="lsoda", atol=1e-8, rtol=1e-8, maxsteps=1e5)
+    res_fu <- as.data.frame(sol_fu); res_fu$time <- res_fu$time + tx_hr
+    res <- rbind(res, res_fu[-1,])
   }
-  res$months      <- res$time/HOURS_PER_MONTH
-  res$OB_total    <- res$OBfast+res$OBslow
-  res$BMD_chg_pct <- (res$BMDls/BMD_ss-1)*100
-  res$CTX_chg_pct <- (res$OC/OC_ss-1)*100
-  res$P1NP_chg_pct<- (res$OB_total/OB_ss-1)*100
-  res$dose_mg     <- dose_mg
-  res$dose_label  <- dplyr::case_when(
+  res$months       <- res$time/HOURS_PER_MONTH
+  res$OB_total     <- res$OBfast + res$OBslow
+  res$BMD_chg_pct  <- (res$BMDls/BMD_ss-1)*100
+  res$CTX_chg_pct  <- (res$OC/OC_ss-1)*100
+  res$P1NP_chg_pct <- (res$OB_total/OB_ss-1)*100
+  res$dose_mg      <- dose_mg
+  res$dose_label   <- dplyr::case_when(
     dose_mg==150~"150 mg QD", dose_mg==400~"200 mg BID",
     dose_mg==600~"300 mg BID", TRUE~paste0(dose_mg," mg"))
   res
@@ -217,7 +397,7 @@ run_sim <- function(dose_mg, tx_months, fu_months=0, ss_months=120) {
 
 at_month <- function(df,m,col) df[[col]][which.min(abs(df$months-m))]
 
-# ── 논문 목표값 (Table 3) ──────────────────────────────────────────────────
+# ── Paper target (Table 3) ──────────────────────────────────────────────────
 paper_target <- data.frame(
   Dose = c("150 mg QD","200 mg BID"),
   `6mo`  = c(-0.61, -3.47),
@@ -234,10 +414,9 @@ paper_target <- data.frame(
 ui <- page_navbar(
   title = "Elagolix QSP Model",
   theme = bs_theme(bootswatch = "flatly", base_font = font_google("Noto Sans KR")),
-  window_title = "Elagolix QSP · Stodtmann 2021",
+  window_title = "Elagolix QSP | Stodtmann 2021",
 
-  # ── Tab 1 : Dose-E2 ──────────────────────────────────────────────────────
-
+  # Tab 1 : Dose-E2
   nav_panel("Dose-E2 Model",
     layout_sidebar(
       sidebar = sidebar(
@@ -251,7 +430,7 @@ ui <- page_navbar(
         hr(),
         helpText("Scaled Logistic (Eq.3, Stodtmann 2021)")
       ),
-      card(card_header("Figure 1 — Dose vs E2"), plotOutput("fig1_plot", height = "450px")),
+      card(card_header("Figure 1 -- Dose vs E2"), plotOutput("fig1_plot", height = "450px")),
       layout_column_wrap(
         width = 1/3,
         value_box("Baseline E2", textOutput("vb_baseline"), theme = "primary"),
@@ -261,22 +440,19 @@ ui <- page_navbar(
     )
   ),
 
-  # ── Tab 2 : QSP Simulation ──────────────────────────────────────────────
+  # Tab 2 : QSP Simulation
   nav_panel("QSP Simulation",
     layout_sidebar(
       sidebar = sidebar(
-        title = "Simulation Settings",
-        width = 300,
+        title = "Simulation Settings", width = 300,
         selectInput("dose_sel", "Elagolix Dose",
-                     choices = c("150 mg QD" = 150, "200 mg BID" = 400,
-                                 "300 mg BID" = 600),
+                     choices = c("150 mg QD"=150, "200 mg BID"=400, "300 mg BID"=600),
                      selected = 150),
         sliderInput("tx_mo", "Treatment (months)", 1, 36, 12, step = 1),
         sliderInput("fu_mo", "Follow-up (months)", 0, 24, 6, step = 1),
         hr(),
         actionButton("run_btn", "Run Simulation",
-                     class = "btn-primary btn-lg w-100",
-                     icon = icon("play")),
+                     class = "btn-primary btn-lg w-100", icon = icon("play")),
         hr(),
         helpText("Steady-state warm-up: 120 months (auto).")
       ),
@@ -291,23 +467,19 @@ ui <- page_navbar(
     )
   ),
 
-  # ── Tab 3 : Multi-dose Comparison ───────────────────────────────────────
+  # Tab 3 : Multi-dose Comparison
   nav_panel("Multi-Dose Comparison",
     layout_sidebar(
       sidebar = sidebar(
-        title = "Comparison Settings",
-        width = 300,
+        title = "Comparison Settings", width = 300,
         checkboxGroupInput("doses_cmp", "Select Doses",
-                            choices = c("150 mg QD" = 150,
-                                        "200 mg BID" = 400,
-                                        "300 mg BID" = 600),
+                            choices = c("150 mg QD"=150, "200 mg BID"=400, "300 mg BID"=600),
                             selected = c(150, 400)),
         sliderInput("tx_mo_cmp", "Treatment (months)", 1, 36, 24, step = 1),
         sliderInput("fu_mo_cmp", "Follow-up (months)", 0, 24, 0, step = 1),
         hr(),
         actionButton("run_cmp", "Run Comparison",
-                     class = "btn-success btn-lg w-100",
-                     icon = icon("layer-group")),
+                     class = "btn-success btn-lg w-100", icon = icon("layer-group")),
         hr(),
         helpText("Compare multiple regimens side-by-side.")
       ),
@@ -316,42 +488,39 @@ ui <- page_navbar(
         nav_panel("CTX",  plotOutput("cmp_ctx",  height = "420px")),
         nav_panel("P1NP", plotOutput("cmp_p1np", height = "420px"))
       ),
-      card(card_header("Table 3 Comparison — BMD Change (%)"),
+      card(card_header("Table 3 Comparison -- BMD Change (%)"),
            DTOutput("tbl3_cmp"))
     )
   ),
 
-  # ── Tab 4 : Validation Table ────────────────────────────────────────────
+  # Tab 4 : Validation Table
   nav_panel("Validation (Table 3)",
-    card(
-      card_header("Paper Target: Predicted BMD Change (%)"),
-      DTOutput("tbl_paper_target")
-    ),
-    card(
-      card_header("Model Prediction (run Comparison first)"),
-      DTOutput("tbl_model_pred")
-    )
+    card(card_header("Paper Target: Predicted BMD Change (%)"),
+         DTOutput("tbl_paper_target")),
+    card(card_header("Model Prediction (run Comparison first)"),
+         DTOutput("tbl_model_pred"))
   ),
 
-  # ── Tab 5 : About ───────────────────────────────────────────────────────
+  # Tab 5 : About
   nav_panel("About",
     card(
       card_header("Model Information"),
       tags$ul(
         tags$li(tags$b("Paper:"), " Stodtmann et al. (2021) Clin Transl Sci. 14:1611-1619"),
         tags$li(tags$b("Foundation:"), " Peterson & Riggs (2010) + Riggs et al. (2012)"),
-        tags$li(tags$b("Reference impl.:"), " MetrumRG OpenBoneMin"),
+        tags$li(tags$b("Reference impl.:"), " MetrumRG OpenBoneMin (faithful R port)"),
         tags$li(tags$b("State variables:"), " 31"),
         tags$li(tags$b("Parameters:"), sprintf(" %d", length(make_params()))),
         tags$li(tags$b("ODE solver:"), " deSolve::lsoda (atol/rtol = 1e-8)")
       ),
       hr(),
-      tags$h5("Module A — Dose-E2 (Scaled Logistic)"),
+      tags$h5("Module A -- Dose-E2 (Scaled Logistic)"),
       tags$pre("E2 = exp(logE2min) + (exp(logE2max) - exp(logE2min)) / (1 + exp(slope * Dose))"),
-      tags$h5("Module B — Calcium Homeostasis & Bone Remodeling QSP"),
+      tags$h5("Module B -- Calcium Homeostasis & Bone Remodeling QSP"),
       tags$p("31 ODEs covering: PTH, calcitriol, Ca/Phos homeostasis,
-              ROB, OBfast, OBslow, OC, RANKL/RANK/OPG, TGF-β,
-              RUNX2, CREB, BCL2, estrogen, BMD (lumbar spine).")
+              ROB, OBfast, OBslow, OC, RANKL/RANK/OPG, TGF-beta,
+              RUNX2, CREB, BCL2, estrogen, BMD (lumbar spine)."),
+      tags$p("All equations faithfully ported from OpenBoneMin.cpp source.")
     )
   )
 )
@@ -369,15 +538,12 @@ server <- function(input, output, session) {
               logE2min = input$logE2min)
     d_seq <- seq(0, 800, 1)
     df <- data.frame(dose = d_seq, E2 = sapply(d_seq, predict_E2, p = p))
-
     key <- data.frame(
-      dose  = c(0, 150, 400, 600),
+      dose = c(0, 150, 400, 600),
       label = c("Baseline", "150 mg QD", "200 mg BID", "300 mg BID"))
     key$E2 <- sapply(key$dose, predict_E2, p = p)
-
     hl <- data.frame(dose = input$dose_highlight,
                      E2 = predict_E2(input$dose_highlight, p))
-
     ggplot(df, aes(dose, E2)) +
       geom_line(colour = "steelblue", linewidth = 1.2) +
       geom_point(data = key, colour = "red", size = 3) +
@@ -390,7 +556,7 @@ server <- function(input, output, session) {
       annotate("text", x = 760, y = exp(p$logE2max), label = "E2max", colour = "grey40") +
       annotate("text", x = 760, y = exp(p$logE2min), label = "E2min", colour = "grey40") +
       scale_y_continuous(limits = c(0, 200)) +
-      labs(title = "Figure 1 — Dose-E2 Relationship (Scaled Logistic)",
+      labs(title = "Figure 1 -- Dose-E2 Relationship (Scaled Logistic)",
            x = "Daily Elagolix Dose (mg)", y = "Predicted E2 (pg/mL)") +
       theme_bw(base_size = 14)
   })
@@ -519,11 +685,11 @@ server <- function(input, output, session) {
   }
 
   output$cmp_bmd  <- renderPlot(make_cmp_plot("BMD_chg_pct",  "BMD Change (%)",
-                                               "BMD — Multi-dose Comparison"))
+                                               "BMD -- Multi-dose Comparison"))
   output$cmp_ctx  <- renderPlot(make_cmp_plot("CTX_chg_pct",  "CTX Change (%)",
-                                               "CTX — Multi-dose Comparison"))
+                                               "CTX -- Multi-dose Comparison"))
   output$cmp_p1np <- renderPlot(make_cmp_plot("P1NP_chg_pct", "P1NP Change (%)",
-                                               "P1NP — Multi-dose Comparison"))
+                                               "P1NP -- Multi-dose Comparison"))
 
   output$tbl3_cmp <- renderDT({
     df <- cmp_data(); if (is.null(df)) return(NULL)

@@ -3,6 +3,7 @@
 # -----------------------------------------------------------------------
 # Model core: faithful R port of MetrumRG OpenBoneMin.cpp
 # Stodtmann et al. (2021) Clin Transl Sci. 14:1611-1619
+# 8-tab dashboard with full biomarker visualization
 ###############################################################################
 
 library(shiny)
@@ -15,6 +16,81 @@ library(DT)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HOURS_PER_MONTH <- 730.5
+
+# ── Biomarker Registry ───────────────────────────────────────────────────────
+BIOMARKERS <- list(
+  # Clinical Endpoints (% change)
+  list(var="BMD_chg_pct",  label="BMD (Lumbar Spine)", unit="% change", group="clinical",    color="#E41A1C"),
+  list(var="CTX_chg_pct",  label="CTX (Resorption)",   unit="% change", group="clinical",    color="#377EB8"),
+  list(var="P1NP_chg_pct", label="P1NP (Formation)",   unit="% change", group="clinical",    color="#4DAF4A"),
+  # Ca & Hormones
+  list(var="PTHconc",      label="PTH",                unit="pg/mL",    group="ca_hormones", color="#E6550D"),
+  list(var="Calcitriol",   label="Calcitriol (1,25D)", unit="pg/mL",    group="ca_hormones", color="#FD8D3C"),
+  list(var="CaConc",       label="Plasma Ca",          unit="mg/dL",    group="ca_hormones", color="#FDAE6B"),
+  list(var="ECCPhos",      label="ECC Phosphate",      unit="mg",       group="ca_hormones", color="#A1D99B"),
+  list(var="AOH",          label="1α-Hydroxylase",     unit="AU",       group="ca_hormones", color="#74C476"),
+  list(var="S",            label="CaSR Sensor",        unit="AU",       group="ca_hormones", color="#31A354"),
+  list(var="Tgut",         label="Gut Ca Pool",        unit="mg",       group="ca_hormones", color="#006D2C"),
+  list(var="Rkid",         label="Renal VDR",          unit="AU",       group="ca_hormones", color="#9E9AC8"),
+  list(var="HAp",          label="Hydroxyapatite",     unit="AU",       group="ca_hormones", color="#756BB1"),
+  list(var="Q",            label="Exchangeable Ca",    unit="mg",       group="ca_hormones", color="#54278F"),
+  list(var="Qbone",        label="Bone Ca Pool",       unit="mg",       group="ca_hormones", color="#636363"),
+  # Bone Cells
+  list(var="ROB1",         label="ROB (Responding OB)",unit="cells",    group="bone_cells",  color="#1B9E77"),
+  list(var="OBfast",       label="OB fast (Active)",   unit="cells",    group="bone_cells",  color="#D95F02"),
+  list(var="OBslow",       label="OB slow (Lining)",   unit="cells",    group="bone_cells",  color="#7570B3"),
+  list(var="OB_total",     label="OB Total",           unit="cells",    group="bone_cells",  color="#E7298A"),
+  list(var="OC",           label="Osteoclasts (OC)",   unit="cells",    group="bone_cells",  color="#66A61E"),
+  # Signaling Pathways
+  list(var="L",            label="RANKL",              unit="pM",       group="signaling",   color="#E41A1C"),
+  list(var="RNK",          label="RANK",               unit="pM",       group="signaling",   color="#377EB8"),
+  list(var="Oopg",         label="OPG",                unit="pM",       group="signaling",   color="#4DAF4A"),
+  list(var="Mcmplx",       label="RANKL-RANK Complex", unit="pM",       group="signaling",   color="#984EA3"),
+  list(var="Ncmplx",       label="RANKL-OPG Complex",  unit="pM",       group="signaling",   color="#FF7F00"),
+  list(var="TGFB",         label="TGF-β (Latent)",     unit="AU",       group="signaling",   color="#A65628"),
+  list(var="TGFBact",      label="TGF-β (Active)",     unit="AU",       group="signaling",   color="#F781BF"),
+  list(var="RX2",          label="RUNX2",              unit="AU",       group="signaling",   color="#1F78B4"),
+  list(var="CREB",         label="CREB",               unit="AU",       group="signaling",   color="#33A02C"),
+  list(var="BCL2",         label="BCL2",               unit="AU",       group="signaling",   color="#FB9A99"),
+  # Auxiliary
+  list(var="EST",          label="Estrogen (EST)",     unit="ratio",    group="auxiliary",    color="#B15928"),
+  list(var="BMDls",        label="BMD (raw)",          unit="ratio",    group="auxiliary",    color="#E41A1C"),
+  list(var="UCA",          label="Urinary Ca",         unit="mg",       group="auxiliary",    color="#636363"),
+  list(var="PhosGut",      label="Gut Phosphate",      unit="mg",       group="auxiliary",    color="#969696"),
+  list(var="IntraPO",      label="Intracellular PO₄",  unit="mg",       group="auxiliary",    color="#BDBDBD"),
+  list(var="PTmax",        label="PTH Max Capacity",   unit="AU",       group="auxiliary",    color="#D9D9D9")
+)
+
+GROUP_LABELS <- c(
+  clinical    = "Clinical Endpoints",
+  ca_hormones = "Calcium & Hormones",
+  bone_cells  = "Bone Cells",
+  signaling   = "Signaling Pathways",
+  auxiliary   = "Auxiliary States"
+)
+
+GROUP_COLORS <- c(
+  clinical    = "#E41A1C",
+  ca_hormones = "#E6550D",
+  bone_cells  = "#1B9E77",
+  signaling   = "#984EA3",
+  auxiliary   = "#636363"
+)
+
+# ── Custom ggplot2 theme ─────────────────────────────────────────────────────
+theme_qsp <- function(base_size = 13) {
+  theme_minimal(base_size = base_size) %+replace%
+    theme(
+      plot.title       = element_text(face = "bold", size = rel(1.1), margin = margin(b = 8)),
+      plot.subtitle    = element_text(color = "grey40", size = rel(0.85)),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "grey92"),
+      strip.text       = element_text(face = "bold", size = rel(0.9)),
+      legend.position  = "bottom",
+      axis.title       = element_text(size = rel(0.9)),
+      plot.margin      = margin(10, 12, 10, 12)
+    )
+}
 
 # ── Module A : Dose -> E2 (Scaled Logistic, Eq.3) ───────────────────────────
 dose_e2_params <- list(slope = 0.00894, logE2max = 5.20, logE2min = 2.14)
@@ -352,54 +428,82 @@ qsp_ode <- function(t, y, p) {
   })
 }
 
-# ── run_sim ──────────────────────────────────────────────────────────────────
-run_sim <- function(dose_mg, tx_months, fu_months=0, ss_months=120) {
-  p <- make_params(); y0 <- make_init(p)
-  ss_hr <- ss_months*HOURS_PER_MONTH
-  tx_hr <- tx_months*HOURS_PER_MONTH
-  fu_hr <- fu_months*HOURS_PER_MONTH
-  EST_tx <- predict_E2(dose_mg)/E2_baseline
+# ── Pre-compute Steady State (performance optimization) ──────────────────────
+message("Computing steady-state (120-month warm-up) ...")
+SS_PARAMS  <- make_params()
+SS_Y0      <- make_init(SS_PARAMS)
+SS_SOL     <- ode(SS_Y0, seq(0, 120 * HOURS_PER_MONTH, by = 48),
+                  qsp_ode, SS_PARAMS,
+                  method = "lsoda", atol = 1e-8, rtol = 1e-8, maxsteps = 1e5)
+n_state    <- length(SS_Y0)
+SS_VEC     <- SS_SOL[nrow(SS_SOL), 2:(n_state + 1)]
+names(SS_VEC) <- names(SS_Y0)
+SS_OB      <- as.numeric(SS_VEC["OBfast"] + SS_VEC["OBslow"])
+SS_OC      <- as.numeric(SS_VEC["OC"])
+SS_BMD     <- as.numeric(SS_VEC["BMDls"])
+message("Steady-state ready.")
 
-  sol_ss <- ode(y0, seq(0,ss_hr,by=24), qsp_ode, p,
-                method="lsoda", atol=1e-8, rtol=1e-8, maxsteps=1e5)
-  n_state <- length(y0)
-  y_ss <- sol_ss[nrow(sol_ss), 2:(n_state+1)]; names(y_ss) <- names(y0)
-  OB_ss <- as.numeric(y_ss["OBfast"]+y_ss["OBslow"])
-  OC_ss <- as.numeric(y_ss["OC"]); BMD_ss <- as.numeric(y_ss["BMDls"])
+# ── Enhanced run_sim (uses cached SS) ────────────────────────────────────────
+run_sim <- function(dose_mg, tx_months, fu_months = 0) {
+  p <- SS_PARAMS
+  y_ss <- SS_VEC
+  tx_hr <- tx_months * HOURS_PER_MONTH
+  fu_hr <- fu_months * HOURS_PER_MONTH
+  EST_tx <- predict_E2(dose_mg) / E2_baseline
 
   y_tx <- y_ss; y_tx["EST"] <- EST_tx
-  ev_tx <- function(t,y,parms){y["EST"] <- EST_tx; y}
-  times_tx <- seq(0,tx_hr,by=24)
-  sol_tx <- ode(y_tx, times_tx, qsp_ode, p, method="lsoda",
-                atol=1e-8, rtol=1e-8, maxsteps=1e5,
-                events=list(func=ev_tx, time=times_tx))
+  ev_tx <- function(t, y, parms) { y["EST"] <- EST_tx; y }
+  times_tx <- seq(0, tx_hr, by = 48)
+  sol_tx <- ode(y_tx, times_tx, qsp_ode, p, method = "lsoda",
+                atol = 1e-8, rtol = 1e-8, maxsteps = 1e5,
+                events = list(func = ev_tx, time = times_tx))
   res <- as.data.frame(sol_tx)
 
-  if(fu_months > 0){
-    y_fu <- sol_tx[nrow(sol_tx), 2:(n_state+1)]; names(y_fu) <- names(y0)
+  if (fu_months > 0) {
+    y_fu <- sol_tx[nrow(sol_tx), 2:(n_state + 1)]
+    names(y_fu) <- names(SS_Y0)
     y_fu["EST"] <- 1
-    sol_fu <- ode(y_fu, seq(0,fu_hr,by=24), qsp_ode, p,
-                  method="lsoda", atol=1e-8, rtol=1e-8, maxsteps=1e5)
-    res_fu <- as.data.frame(sol_fu); res_fu$time <- res_fu$time + tx_hr
-    res <- rbind(res, res_fu[-1,])
+    sol_fu <- ode(y_fu, seq(0, fu_hr, by = 48), qsp_ode, p,
+                  method = "lsoda", atol = 1e-8, rtol = 1e-8, maxsteps = 1e5)
+    res_fu <- as.data.frame(sol_fu)
+    res_fu$time <- res_fu$time + tx_hr
+    res <- rbind(res, res_fu[-1, ])
   }
-  res$months       <- res$time/HOURS_PER_MONTH
+
+  # Derived columns
+  res$months       <- res$time / HOURS_PER_MONTH
   res$OB_total     <- res$OBfast + res$OBslow
-  res$BMD_chg_pct  <- (res$BMDls/BMD_ss-1)*100
-  res$CTX_chg_pct  <- (res$OC/OC_ss-1)*100
-  res$P1NP_chg_pct <- (res$OB_total/OB_ss-1)*100
-  res$dose_mg      <- dose_mg
-  res$dose_label   <- dplyr::case_when(
-    dose_mg==150~"150 mg QD", dose_mg==400~"200 mg BID",
-    dose_mg==600~"300 mg BID", TRUE~paste0(dose_mg," mg"))
+  res$CaConc       <- res$P / 14
+  res$Calcitriol   <- res$B / 14
+  res$PTHconc      <- res$PTH / 14
+  res$BMD_chg_pct  <- (res$BMDls / SS_BMD - 1) * 100
+  res$CTX_chg_pct  <- (res$OC / SS_OC - 1) * 100
+  res$P1NP_chg_pct <- (res$OB_total / SS_OB - 1) * 100
+
+  # % change from SS for all state variables
+  for (v in names(SS_VEC)) {
+    ss_val <- as.numeric(SS_VEC[v])
+    if (abs(ss_val) > 1e-15) {
+      res[[paste0(v, "_pct")]] <- (res[[v]] / ss_val - 1) * 100
+    }
+  }
+  res$OB_total_pct <- (res$OB_total / SS_OB - 1) * 100
+
+  res$dose_mg    <- dose_mg
+  res$dose_label <- dplyr::case_when(
+    dose_mg == 150 ~ "150 mg QD",
+    dose_mg == 400 ~ "200 mg BID",
+    dose_mg == 600 ~ "300 mg BID",
+    TRUE ~ paste0(dose_mg, " mg")
+  )
   res
 }
 
-at_month <- function(df,m,col) df[[col]][which.min(abs(df$months-m))]
+at_month <- function(df, m, col) df[[col]][which.min(abs(df$months - m))]
 
 # ── Paper target (Table 3) ──────────────────────────────────────────────────
 paper_target <- data.frame(
-  Dose = c("150 mg QD","200 mg BID"),
+  Dose = c("150 mg QD", "200 mg BID"),
   `6mo`  = c(-0.61, -3.47),
   `12mo` = c(-0.91, -4.95),
   `18mo` = c(-0.96, -5.15),
@@ -407,17 +511,84 @@ paper_target <- data.frame(
   check.names = FALSE
 )
 
+# ── Plot helper functions ────────────────────────────────────────────────────
+make_detail_plot <- function(df, var, label, unit, color, tx_end, fu_months) {
+  if (is.null(df) || !var %in% names(df)) return(NULL)
+  ggplot(df, aes(months, .data[[var]])) +
+    geom_line(colour = color, linewidth = 1.1) +
+    {if (fu_months > 0) geom_vline(xintercept = tx_end,
+                                    linetype = "dashed", colour = "grey50")} +
+    {if (fu_months > 0) annotate("text", x = tx_end, y = Inf, label = " Tx end",
+                                  hjust = 0, vjust = 1.5, size = 3.2, colour = "grey50")} +
+    labs(title = label, x = "Time (months)", y = unit) +
+    theme_qsp(base_size = 12)
+}
+
+make_dashboard_plot <- function(df, bm_list, tx_end, fu_months) {
+  if (is.null(df)) return(NULL)
+  # Build long-format data for faceting
+  plot_vars <- sapply(bm_list, `[[`, "var")
+  plot_labels <- sapply(bm_list, `[[`, "label")
+  avail <- plot_vars[plot_vars %in% names(df)]
+  if (length(avail) == 0) return(NULL)
+
+  long <- df %>%
+    select(months, all_of(avail)) %>%
+    pivot_longer(-months, names_to = "variable", values_to = "value")
+
+  # Map variable names to readable labels
+  label_map <- setNames(plot_labels, plot_vars)
+  long$facet_label <- label_map[long$variable]
+  long$facet_label <- factor(long$facet_label, levels = unique(label_map[avail]))
+
+  ggplot(long, aes(months, value)) +
+    geom_line(colour = "#2171B5", linewidth = 0.6) +
+    {if (fu_months > 0) geom_vline(xintercept = tx_end,
+                                    linetype = "dashed", colour = "grey60", linewidth = 0.4)} +
+    facet_wrap(~ facet_label, scales = "free_y", ncol = 5) +
+    labs(x = "Time (months)", y = NULL) +
+    theme_qsp(base_size = 10) +
+    theme(
+      strip.text = element_text(size = 8, face = "bold"),
+      axis.text  = element_text(size = 7),
+      panel.spacing = unit(0.4, "lines")
+    )
+}
+
+make_comparison_plot <- function(df, var, label, unit, tx_end, fu_months) {
+  if (is.null(df) || !var %in% names(df)) return(NULL)
+  ggplot(df, aes(months, .data[[var]], colour = dose_label)) +
+    geom_line(linewidth = 1) +
+    {if (fu_months > 0) geom_vline(xintercept = tx_end,
+                                    linetype = "dashed", colour = "grey50")} +
+    geom_hline(yintercept = 0, linetype = "dotted", colour = "grey70") +
+    labs(title = label, x = "Time (months)", y = unit, colour = "Dose") +
+    theme_qsp(base_size = 13) +
+    theme(legend.position = "bottom")
+}
+
 ###############################################################################
 #                         Shiny UI
 ###############################################################################
 
+# Biomarker choices for comparison selector
+bm_choices <- setNames(
+
+  sapply(BIOMARKERS, `[[`, "var"),
+  sapply(BIOMARKERS, `[[`, "label")
+)
+
 ui <- page_navbar(
   title = "Elagolix QSP Model",
-  theme = bs_theme(bootswatch = "flatly", base_font = font_google("Noto Sans KR")),
+  theme = bs_theme(
+    bootswatch = "flatly",
+    base_font = font_google("Noto Sans KR"),
+    "navbar-bg" = "#2C3E50"
+  ),
   window_title = "Elagolix QSP | Stodtmann 2021",
 
-  # Tab 1 : Dose-E2
-  nav_panel("Dose-E2 Model",
+  # ═══════════ Tab 1: Dose-E2 ═══════════════════════════════════════════════
+  nav_panel("Dose \u2192 E2",
     layout_sidebar(
       sidebar = sidebar(
         title = "Module A Parameters",
@@ -426,11 +597,12 @@ ui <- page_navbar(
         numericInput("logE2min", "log(E2min)", 2.14, step = 0.01),
         hr(),
         sliderInput("dose_highlight", "Highlight dose (mg)",
-                     min = 0, max = 800, value = 150, step = 10),
+                    min = 0, max = 800, value = 150, step = 10),
         hr(),
         helpText("Scaled Logistic (Eq.3, Stodtmann 2021)")
       ),
-      card(card_header("Figure 1 -- Dose vs E2"), plotOutput("fig1_plot", height = "450px")),
+      card(card_header("Dose-E2 Relationship (Scaled Logistic)"),
+           plotOutput("fig1_plot", height = "420px")),
       layout_column_wrap(
         width = 1/3,
         value_box("Baseline E2", textOutput("vb_baseline"), theme = "primary"),
@@ -440,69 +612,193 @@ ui <- page_navbar(
     )
   ),
 
-  # Tab 2 : QSP Simulation
-  nav_panel("QSP Simulation",
+  # ═══════════ Tab 2: Dashboard ═════════════════════════════════════════════
+  nav_panel("Dashboard",
     layout_sidebar(
       sidebar = sidebar(
-        title = "Simulation Settings", width = 300,
-        selectInput("dose_sel", "Elagolix Dose",
-                     choices = c("150 mg QD"=150, "200 mg BID"=400, "300 mg BID"=600),
-                     selected = 150),
-        sliderInput("tx_mo", "Treatment (months)", 1, 36, 12, step = 1),
-        sliderInput("fu_mo", "Follow-up (months)", 0, 24, 6, step = 1),
+        title = "Simulation Settings", width = 280,
+        selectInput("dash_dose", "Elagolix Dose",
+                    choices = c("150 mg QD" = 150, "200 mg BID" = 400, "300 mg BID" = 600),
+                    selected = 400),
+        sliderInput("dash_tx", "Treatment (months)", 1, 36, 24, step = 1),
+        sliderInput("dash_fu", "Follow-up (months)", 0, 24, 6, step = 1),
         hr(),
-        actionButton("run_btn", "Run Simulation",
+        actionButton("dash_run", "Run Simulation",
                      class = "btn-primary btn-lg w-100", icon = icon("play")),
         hr(),
-        helpText("Steady-state warm-up: 120 months (auto).")
+        helpText("All 31 state variables at a glance.")
       ),
-      navset_card_tab(
-        nav_panel("BMD",  plotOutput("plot_bmd",  height = "420px")),
-        nav_panel("CTX",  plotOutput("plot_ctx",  height = "420px")),
-        nav_panel("P1NP", plotOutput("plot_p1np", height = "420px")),
-        nav_panel("All Markers", plotOutput("plot_all", height = "480px"))
-      ),
-      card(card_header("Biomarker Values at Selected Timepoints"),
-           DTOutput("tbl_biomarker"))
+      card(
+        card_header(class = "bg-primary text-white",
+                    "All Biomarkers Overview"),
+        plotOutput("dash_plot", height = "900px")
+      )
     )
   ),
 
-  # Tab 3 : Multi-dose Comparison
-  nav_panel("Multi-Dose Comparison",
+  # ═══════════ Tab 3: Clinical Endpoints ════════════════════════════════════
+  nav_panel("Clinical Endpoints",
+    layout_sidebar(
+      sidebar = sidebar(
+        title = "Simulation Settings", width = 280,
+        selectInput("clin_dose", "Elagolix Dose",
+                    choices = c("150 mg QD" = 150, "200 mg BID" = 400, "300 mg BID" = 600),
+                    selected = 150),
+        sliderInput("clin_tx", "Treatment (months)", 1, 36, 12, step = 1),
+        sliderInput("clin_fu", "Follow-up (months)", 0, 24, 6, step = 1),
+        hr(),
+        actionButton("clin_run", "Run Simulation",
+                     class = "btn-primary btn-lg w-100", icon = icon("play")),
+        hr(),
+        helpText("BMD, CTX, P1NP — clinical bone markers.")
+      ),
+      layout_column_wrap(
+        width = 1/2,
+        card(card_header("BMD Change (%)"),   plotOutput("clin_bmd",  height = "320px")),
+        card(card_header("CTX Change (%)"),   plotOutput("clin_ctx",  height = "320px")),
+        card(card_header("P1NP Change (%)"),  plotOutput("clin_p1np", height = "320px")),
+        card(card_header("All Clinical Markers"),
+             plotOutput("clin_all", height = "320px"))
+      ),
+      card(card_header("Biomarker Values at Selected Timepoints"),
+           DTOutput("clin_table"))
+    )
+  ),
+
+  # ═══════════ Tab 4: Ca & Hormones ════════════════════════════════════════
+  nav_panel("Ca & Hormones",
+    layout_sidebar(
+      sidebar = sidebar(
+        title = "Simulation Settings", width = 280,
+        selectInput("ca_dose", "Elagolix Dose",
+                    choices = c("150 mg QD" = 150, "200 mg BID" = 400, "300 mg BID" = 600),
+                    selected = 400),
+        sliderInput("ca_tx", "Treatment (months)", 1, 36, 24, step = 1),
+        sliderInput("ca_fu", "Follow-up (months)", 0, 24, 6, step = 1),
+        hr(),
+        actionButton("ca_run", "Run Simulation",
+                     class = "btn-warning btn-lg w-100", icon = icon("play")),
+        hr(),
+        helpText("PTH, Calcitriol, Ca, Phosphate, and related states.")
+      ),
+      layout_column_wrap(
+        width = 1/2,
+        card(card_header("PTH Concentration"),        plotOutput("ca_pth",     height = "300px")),
+        card(card_header("Calcitriol (1,25D)"),       plotOutput("ca_ctriol",  height = "300px")),
+        card(card_header("Plasma Calcium"),            plotOutput("ca_plasma",  height = "300px")),
+        card(card_header("ECC Phosphate"),             plotOutput("ca_phos",    height = "300px")),
+        card(card_header("1\u03b1-Hydroxylase (AOH)"),plotOutput("ca_aoh",     height = "300px")),
+        card(card_header("CaSR Sensor (S)"),           plotOutput("ca_sensor",  height = "300px")),
+        card(card_header("Gut Ca Pool (Tgut)"),        plotOutput("ca_tgut",    height = "300px")),
+        card(card_header("Renal VDR (Rkid)"),          plotOutput("ca_rkid",    height = "300px")),
+        card(card_header("Hydroxyapatite"),            plotOutput("ca_hap",     height = "300px")),
+        card(card_header("Exchangeable Ca (Q)"),       plotOutput("ca_q",       height = "300px")),
+        card(card_header("Bone Ca Pool (Qbone)"),      plotOutput("ca_qbone",   height = "300px")),
+        card(card_header("Urinary Ca (UCA)"),          plotOutput("ca_uca",     height = "300px"))
+      )
+    )
+  ),
+
+  # ═══════════ Tab 5: Bone Cells ═══════════════════════════════════════════
+  nav_panel("Bone Cells",
+    layout_sidebar(
+      sidebar = sidebar(
+        title = "Simulation Settings", width = 280,
+        selectInput("bone_dose", "Elagolix Dose",
+                    choices = c("150 mg QD" = 150, "200 mg BID" = 400, "300 mg BID" = 600),
+                    selected = 400),
+        sliderInput("bone_tx", "Treatment (months)", 1, 36, 24, step = 1),
+        sliderInput("bone_fu", "Follow-up (months)", 0, 24, 6, step = 1),
+        hr(),
+        actionButton("bone_run", "Run Simulation",
+                     class = "btn-success btn-lg w-100", icon = icon("play")),
+        hr(),
+        helpText("ROB, OBfast, OBslow, OB total, OC.")
+      ),
+      layout_column_wrap(
+        width = 1/2,
+        card(card_header("ROB (Responding OB)"), plotOutput("bone_rob",    height = "320px")),
+        card(card_header("OB fast (Active)"),    plotOutput("bone_obfast", height = "320px")),
+        card(card_header("OB slow (Lining)"),    plotOutput("bone_obslow", height = "320px")),
+        card(card_header("OB Total"),            plotOutput("bone_obtot",  height = "320px")),
+        card(card_header("Osteoclasts (OC)"),    plotOutput("bone_oc",     height = "320px"))
+      )
+    )
+  ),
+
+  # ═══════════ Tab 6: Signaling Pathways ═══════════════════════════════════
+  nav_panel("Signaling",
+    layout_sidebar(
+      sidebar = sidebar(
+        title = "Simulation Settings", width = 280,
+        selectInput("sig_dose", "Elagolix Dose",
+                    choices = c("150 mg QD" = 150, "200 mg BID" = 400, "300 mg BID" = 600),
+                    selected = 400),
+        sliderInput("sig_tx", "Treatment (months)", 1, 36, 24, step = 1),
+        sliderInput("sig_fu", "Follow-up (months)", 0, 24, 6, step = 1),
+        hr(),
+        actionButton("sig_run", "Run Simulation",
+                     class = "btn-info btn-lg w-100", icon = icon("play")),
+        hr(),
+        helpText("RANKL/RANK/OPG, TGF-\u03b2, RUNX2, CREB, BCL2.")
+      ),
+      layout_column_wrap(
+        width = 1/2,
+        card(card_header("RANKL"),              plotOutput("sig_rankl",   height = "300px")),
+        card(card_header("RANK"),               plotOutput("sig_rank",    height = "300px")),
+        card(card_header("OPG"),                plotOutput("sig_opg",     height = "300px")),
+        card(card_header("RANKL-RANK Complex"), plotOutput("sig_mcmplx", height = "300px")),
+        card(card_header("RANKL-OPG Complex"),  plotOutput("sig_ncmplx", height = "300px")),
+        card(card_header("TGF-\u03b2 (Latent)"),plotOutput("sig_tgfb",   height = "300px")),
+        card(card_header("TGF-\u03b2 (Active)"),plotOutput("sig_tgfba",  height = "300px")),
+        card(card_header("RUNX2"),              plotOutput("sig_runx2",   height = "300px")),
+        card(card_header("CREB"),               plotOutput("sig_creb",    height = "300px")),
+        card(card_header("BCL2"),               plotOutput("sig_bcl2",    height = "300px"))
+      )
+    )
+  ),
+
+  # ═══════════ Tab 7: Multi-Dose Comparison ════════════════════════════════
+  nav_panel("Multi-Dose",
     layout_sidebar(
       sidebar = sidebar(
         title = "Comparison Settings", width = 300,
-        checkboxGroupInput("doses_cmp", "Select Doses",
-                            choices = c("150 mg QD"=150, "200 mg BID"=400, "300 mg BID"=600),
-                            selected = c(150, 400)),
-        sliderInput("tx_mo_cmp", "Treatment (months)", 1, 36, 24, step = 1),
-        sliderInput("fu_mo_cmp", "Follow-up (months)", 0, 24, 0, step = 1),
+        checkboxGroupInput("cmp_doses", "Select Doses",
+                           choices = c("150 mg QD" = 150, "200 mg BID" = 400, "300 mg BID" = 600),
+                           selected = c(150, 400)),
+        sliderInput("cmp_tx", "Treatment (months)", 1, 36, 24, step = 1),
+        sliderInput("cmp_fu", "Follow-up (months)", 0, 24, 0, step = 1),
         hr(),
-        actionButton("run_cmp", "Run Comparison",
+        selectInput("cmp_var", "Biomarker to Compare", choices = bm_choices,
+                    selected = "BMD_chg_pct"),
+        hr(),
+        actionButton("cmp_run", "Run Comparison",
                      class = "btn-success btn-lg w-100", icon = icon("layer-group")),
         hr(),
-        helpText("Compare multiple regimens side-by-side.")
+        helpText("Compare multiple regimens side-by-side for any biomarker.")
       ),
-      navset_card_tab(
-        nav_panel("BMD",  plotOutput("cmp_bmd",  height = "420px")),
-        nav_panel("CTX",  plotOutput("cmp_ctx",  height = "420px")),
-        nav_panel("P1NP", plotOutput("cmp_p1np", height = "420px"))
+      card(card_header("Multi-Dose Comparison"),
+           plotOutput("cmp_plot", height = "450px")),
+      layout_column_wrap(
+        width = 1/3,
+        card(card_header("BMD Comparison"),  plotOutput("cmp_bmd",  height = "300px")),
+        card(card_header("CTX Comparison"),  plotOutput("cmp_ctx",  height = "300px")),
+        card(card_header("P1NP Comparison"), plotOutput("cmp_p1np", height = "300px"))
       ),
-      card(card_header("Table 3 Comparison -- BMD Change (%)"),
-           DTOutput("tbl3_cmp"))
+      card(card_header("BMD Change (%) at Key Timepoints"),
+           DTOutput("cmp_table"))
     )
   ),
 
-  # Tab 4 : Validation Table
-  nav_panel("Validation (Table 3)",
-    card(card_header("Paper Target: Predicted BMD Change (%)"),
-         DTOutput("tbl_paper_target")),
-    card(card_header("Model Prediction (run Comparison first)"),
-         DTOutput("tbl_model_pred"))
-  ),
-
-  # Tab 5 : About
-  nav_panel("About",
+  # ═══════════ Tab 8: Validation ═══════════════════════════════════════════
+  nav_panel("Validation",
+    layout_column_wrap(
+      width = 1/2,
+      card(card_header(class = "bg-primary text-white", "Paper Target (Table 3)"),
+           DTOutput("val_paper")),
+      card(card_header(class = "bg-success text-white", "Model Prediction"),
+           DTOutput("val_model"))
+    ),
     card(
       card_header("Model Information"),
       tags$ul(
@@ -514,11 +810,11 @@ ui <- page_navbar(
         tags$li(tags$b("ODE solver:"), " deSolve::lsoda (atol/rtol = 1e-8)")
       ),
       hr(),
-      tags$h5("Module A -- Dose-E2 (Scaled Logistic)"),
+      tags$h5("Module A \u2014 Dose-E2 (Scaled Logistic)"),
       tags$pre("E2 = exp(logE2min) + (exp(logE2max) - exp(logE2min)) / (1 + exp(slope * Dose))"),
-      tags$h5("Module B -- Calcium Homeostasis & Bone Remodeling QSP"),
+      tags$h5("Module B \u2014 Calcium Homeostasis & Bone Remodeling QSP"),
       tags$p("31 ODEs covering: PTH, calcitriol, Ca/Phos homeostasis,
-              ROB, OBfast, OBslow, OC, RANKL/RANK/OPG, TGF-beta,
+              ROB, OBfast, OBslow, OC, RANKL/RANK/OPG, TGF-\u03b2,
               RUNX2, CREB, BCL2, estrogen, BMD (lumbar spine)."),
       tags$p("All equations faithfully ported from OpenBoneMin.cpp source.")
     )
@@ -531,7 +827,9 @@ ui <- page_navbar(
 
 server <- function(input, output, session) {
 
-  # ========== Tab 1 : Dose-E2 =============================================
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 1: Dose-E2
+  # ══════════════════════════════════════════════════════════════════════════
 
   output$fig1_plot <- renderPlot({
     p <- list(slope = input$slope, logE2max = input$logE2max,
@@ -545,153 +843,224 @@ server <- function(input, output, session) {
     hl <- data.frame(dose = input$dose_highlight,
                      E2 = predict_E2(input$dose_highlight, p))
     ggplot(df, aes(dose, E2)) +
-      geom_line(colour = "steelblue", linewidth = 1.2) +
-      geom_point(data = key, colour = "red", size = 3) +
+      geom_line(colour = "#2C3E50", linewidth = 1.3) +
+      geom_point(data = key, colour = "#E74C3C", size = 3.5) +
       geom_text(data = key, aes(label = label), vjust = -1.3, size = 3.5) +
-      geom_point(data = hl, colour = "orange", size = 5, shape = 18) +
+      geom_point(data = hl, colour = "#F39C12", size = 5, shape = 18) +
       geom_segment(data = hl, aes(x = dose, xend = dose, y = 0, yend = E2),
-                   linetype = "dotted", colour = "orange") +
+                   linetype = "dotted", colour = "#F39C12") +
       geom_hline(yintercept = c(exp(p$logE2min), exp(p$logE2max)),
                  linetype = "dashed", colour = "grey60") +
       annotate("text", x = 760, y = exp(p$logE2max), label = "E2max", colour = "grey40") +
       annotate("text", x = 760, y = exp(p$logE2min), label = "E2min", colour = "grey40") +
       scale_y_continuous(limits = c(0, 200)) +
-      labs(title = "Figure 1 -- Dose-E2 Relationship (Scaled Logistic)",
+      labs(title = "Dose-E2 Relationship (Scaled Logistic, Eq. 3)",
+           subtitle = "Stodtmann et al. (2021)",
            x = "Daily Elagolix Dose (mg)", y = "Predicted E2 (pg/mL)") +
-      theme_bw(base_size = 14)
+      theme_qsp(base_size = 14)
   })
 
   output$vb_baseline <- renderText(sprintf("%.1f pg/mL", predict_E2(0,
-    list(slope=input$slope, logE2max=input$logE2max, logE2min=input$logE2min))))
+    list(slope = input$slope, logE2max = input$logE2max, logE2min = input$logE2min))))
   output$vb_pred_e2 <- renderText({
     e2 <- predict_E2(input$dose_highlight,
-      list(slope=input$slope, logE2max=input$logE2max, logE2min=input$logE2min))
+      list(slope = input$slope, logE2max = input$logE2max, logE2min = input$logE2min))
     sprintf("%.1f pg/mL", e2)
   })
   output$vb_supp <- renderText({
-    p <- list(slope=input$slope, logE2max=input$logE2max, logE2min=input$logE2min)
+    p <- list(slope = input$slope, logE2max = input$logE2max, logE2min = input$logE2min)
     bl <- predict_E2(0, p); e2 <- predict_E2(input$dose_highlight, p)
-    sprintf("%.1f %%", (1-e2/bl)*100)
+    sprintf("%.1f %%", (1 - e2 / bl) * 100)
   })
 
-  # ========== Tab 2 : QSP Simulation ======================================
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 2: Dashboard
+  # ══════════════════════════════════════════════════════════════════════════
 
-  sim_data <- reactiveVal(NULL)
-
-  observeEvent(input$run_btn, {
-    showNotification("Simulation running ... please wait.", type = "message",
-                     duration = NULL, id = "sim_note")
-    dose <- as.numeric(input$dose_sel)
+  dash_data <- eventReactive(input$dash_run, {
+    showNotification("Running simulation ...", type = "message", duration = NULL, id = "dash_note")
     res <- tryCatch(
-      run_sim(dose, input$tx_mo, input$fu_mo),
-      error = function(e) { showNotification(paste("Error:", e$message), type="error"); NULL }
+      run_sim(as.numeric(input$dash_dose), input$dash_tx, input$dash_fu),
+      error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL }
     )
-    removeNotification("sim_note")
-    if (!is.null(res)) {
-      sim_data(res)
-      showNotification("Simulation complete!", type = "message", duration = 3)
-    }
+    removeNotification("dash_note")
+    if (!is.null(res)) showNotification("Done!", type = "message", duration = 2)
+    res
   })
 
-  make_tc_plot <- function(df, yvar, ylab, title_str) {
-    if (is.null(df)) return(NULL)
-    tx_end <- input$tx_mo
-    ggplot(df, aes(months, .data[[yvar]])) +
-      geom_line(colour = "steelblue", linewidth = 1) +
-      {if (input$fu_mo > 0) geom_vline(xintercept = tx_end,
-                                         linetype = "dashed", colour = "grey50")} +
-      {if (input$fu_mo > 0)
-        annotate("text", x = tx_end + 0.3, y = max(df[[yvar]], na.rm=T)*0.9,
-                 label = "Tx end", size = 3.5, hjust = 0)} +
-      geom_hline(yintercept = 0, linetype = "dotted") +
-      labs(title = title_str, x = "Time (months)", y = ylab) +
-      theme_bw(base_size = 14)
-  }
+  output$dash_plot <- renderPlot({
+    make_dashboard_plot(dash_data(), BIOMARKERS, input$dash_tx, input$dash_fu)
+  })
 
-  output$plot_bmd  <- renderPlot(make_tc_plot(sim_data(), "BMD_chg_pct",
-                                              "BMD Change (%)", "BMD Change Over Time"))
-  output$plot_ctx  <- renderPlot(make_tc_plot(sim_data(), "CTX_chg_pct",
-                                              "CTX Change (%)", "CTX (Bone Resorption) Over Time"))
-  output$plot_p1np <- renderPlot(make_tc_plot(sim_data(), "P1NP_chg_pct",
-                                              "P1NP Change (%)", "P1NP (Bone Formation) Over Time"))
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 3: Clinical Endpoints
+  # ══════════════════════════════════════════════════════════════════════════
 
-  output$plot_all <- renderPlot({
-    df <- sim_data(); if (is.null(df)) return(NULL)
-    tx_end <- input$tx_mo
+  clin_data <- eventReactive(input$clin_run, {
+    showNotification("Running simulation ...", type = "message", duration = NULL, id = "clin_note")
+    res <- tryCatch(
+      run_sim(as.numeric(input$clin_dose), input$clin_tx, input$clin_fu),
+      error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL }
+    )
+    removeNotification("clin_note")
+    if (!is.null(res)) showNotification("Done!", type = "message", duration = 2)
+    res
+  })
+
+  output$clin_bmd <- renderPlot({
+    make_detail_plot(clin_data(), "BMD_chg_pct", "BMD (Lumbar Spine)", "% change",
+                     "#E41A1C", input$clin_tx, input$clin_fu)
+  })
+  output$clin_ctx <- renderPlot({
+    make_detail_plot(clin_data(), "CTX_chg_pct", "CTX (Bone Resorption)", "% change",
+                     "#377EB8", input$clin_tx, input$clin_fu)
+  })
+  output$clin_p1np <- renderPlot({
+    make_detail_plot(clin_data(), "P1NP_chg_pct", "P1NP (Bone Formation)", "% change",
+                     "#4DAF4A", input$clin_tx, input$clin_fu)
+  })
+  output$clin_all <- renderPlot({
+    df <- clin_data(); if (is.null(df)) return(NULL)
     long <- df %>%
       select(months, BMD_chg_pct, CTX_chg_pct, P1NP_chg_pct) %>%
-      pivot_longer(-months, names_to = "Marker", values_to = "Change_pct") %>%
+      pivot_longer(-months, names_to = "Marker", values_to = "Change") %>%
       mutate(Marker = recode(Marker,
         BMD_chg_pct = "BMD", CTX_chg_pct = "CTX", P1NP_chg_pct = "P1NP"))
-    ggplot(long, aes(months, Change_pct, colour = Marker)) +
+    ggplot(long, aes(months, Change, colour = Marker)) +
       geom_line(linewidth = 1) +
-      {if (input$fu_mo > 0) geom_vline(xintercept = tx_end,
-                                         linetype = "dashed", colour = "grey50")} +
-      geom_hline(yintercept = 0, linetype = "dotted") +
+      {if (input$clin_fu > 0) geom_vline(xintercept = input$clin_tx,
+                                           linetype = "dashed", colour = "grey50")} +
+      geom_hline(yintercept = 0, linetype = "dotted", colour = "grey70") +
       scale_colour_manual(values = c(BMD = "#E41A1C", CTX = "#377EB8", P1NP = "#4DAF4A")) +
-      labs(title = "All Biomarkers", x = "Time (months)", y = "Change from Baseline (%)") +
-      theme_bw(base_size = 14) + theme(legend.position = "bottom")
+      labs(title = "All Clinical Markers", x = "Time (months)",
+           y = "Change from Baseline (%)", colour = NULL) +
+      theme_qsp(base_size = 12)
   })
 
-  output$tbl_biomarker <- renderDT({
-    df <- sim_data(); if (is.null(df)) return(NULL)
+  output$clin_table <- renderDT({
+    df <- clin_data(); if (is.null(df)) return(NULL)
     pts <- c(3, 6, 9, 12, 18, 24)
     pts <- pts[pts <= max(df$months)]
     tbl <- data.frame(
-      `Month` = pts,
-      `BMD (%)` = sapply(pts, function(m) round(at_month(df, m, "BMD_chg_pct"), 3)),
-      `CTX (%)` = sapply(pts, function(m) round(at_month(df, m, "CTX_chg_pct"), 3)),
+      Month    = pts,
+      `BMD (%)`  = sapply(pts, function(m) round(at_month(df, m, "BMD_chg_pct"), 3)),
+      `CTX (%)`  = sapply(pts, function(m) round(at_month(df, m, "CTX_chg_pct"), 3)),
       `P1NP (%)` = sapply(pts, function(m) round(at_month(df, m, "P1NP_chg_pct"), 3)),
       check.names = FALSE
     )
-    datatable(tbl, rownames = FALSE,
-              options = list(dom = "t", pageLength = 20)) %>%
+    datatable(tbl, rownames = FALSE, options = list(dom = "t", pageLength = 20)) %>%
       formatRound(2:4, 2)
   })
 
-  # ========== Tab 3 : Multi-dose Comparison ================================
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 4: Ca & Hormones
+  # ══════════════════════════════════════════════════════════════════════════
 
-  cmp_data <- reactiveVal(NULL)
-
-  observeEvent(input$run_cmp, {
-    doses <- as.numeric(input$doses_cmp)
-    if (length(doses) == 0) {
-      showNotification("Select at least one dose.", type = "warning"); return()
-    }
-    showNotification("Running comparison ... please wait.", type = "message",
-                     duration = NULL, id = "cmp_note")
-    all_res <- tryCatch({
-      do.call(rbind, lapply(doses, function(d) {
-        run_sim(d, input$tx_mo_cmp, input$fu_mo_cmp)
-      }))
-    }, error = function(e) { showNotification(paste("Error:",e$message), type="error"); NULL })
-    removeNotification("cmp_note")
-    if (!is.null(all_res)) {
-      cmp_data(all_res)
-      showNotification("Comparison complete!", type = "message", duration = 3)
-    }
+  ca_data <- eventReactive(input$ca_run, {
+    showNotification("Running simulation ...", type = "message", duration = NULL, id = "ca_note")
+    res <- tryCatch(
+      run_sim(as.numeric(input$ca_dose), input$ca_tx, input$ca_fu),
+      error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL }
+    )
+    removeNotification("ca_note")
+    if (!is.null(res)) showNotification("Done!", type = "message", duration = 2)
+    res
   })
 
-  make_cmp_plot <- function(yvar, ylab, title_str) {
+  output$ca_pth    <- renderPlot(make_detail_plot(ca_data(), "PTHconc",    "PTH",              "pg/mL", "#E6550D", input$ca_tx, input$ca_fu))
+  output$ca_ctriol <- renderPlot(make_detail_plot(ca_data(), "Calcitriol", "Calcitriol (1,25D)","pg/mL","#FD8D3C", input$ca_tx, input$ca_fu))
+  output$ca_plasma <- renderPlot(make_detail_plot(ca_data(), "CaConc",     "Plasma Ca",         "mg/dL","#FDAE6B", input$ca_tx, input$ca_fu))
+  output$ca_phos   <- renderPlot(make_detail_plot(ca_data(), "ECCPhos",    "ECC Phosphate",     "mg",   "#A1D99B", input$ca_tx, input$ca_fu))
+  output$ca_aoh    <- renderPlot(make_detail_plot(ca_data(), "AOH",        "1\u03b1-Hydroxylase","AU",  "#74C476", input$ca_tx, input$ca_fu))
+  output$ca_sensor <- renderPlot(make_detail_plot(ca_data(), "S",          "CaSR Sensor",       "AU",   "#31A354", input$ca_tx, input$ca_fu))
+  output$ca_tgut   <- renderPlot(make_detail_plot(ca_data(), "Tgut",       "Gut Ca Pool",       "mg",   "#006D2C", input$ca_tx, input$ca_fu))
+  output$ca_rkid   <- renderPlot(make_detail_plot(ca_data(), "Rkid",       "Renal VDR",         "AU",   "#9E9AC8", input$ca_tx, input$ca_fu))
+  output$ca_hap    <- renderPlot(make_detail_plot(ca_data(), "HAp",        "Hydroxyapatite",    "AU",   "#756BB1", input$ca_tx, input$ca_fu))
+  output$ca_q      <- renderPlot(make_detail_plot(ca_data(), "Q",          "Exchangeable Ca",   "mg",   "#54278F", input$ca_tx, input$ca_fu))
+  output$ca_qbone  <- renderPlot(make_detail_plot(ca_data(), "Qbone",      "Bone Ca Pool",      "mg",   "#636363", input$ca_tx, input$ca_fu))
+  output$ca_uca    <- renderPlot(make_detail_plot(ca_data(), "UCA",        "Urinary Ca",        "mg",   "#969696", input$ca_tx, input$ca_fu))
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 5: Bone Cells
+  # ══════════════════════════════════════════════════════════════════════════
+
+  bone_data <- eventReactive(input$bone_run, {
+    showNotification("Running simulation ...", type = "message", duration = NULL, id = "bone_note")
+    res <- tryCatch(
+      run_sim(as.numeric(input$bone_dose), input$bone_tx, input$bone_fu),
+      error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL }
+    )
+    removeNotification("bone_note")
+    if (!is.null(res)) showNotification("Done!", type = "message", duration = 2)
+    res
+  })
+
+  output$bone_rob    <- renderPlot(make_detail_plot(bone_data(), "ROB1",     "ROB (Responding OB)","cells","#1B9E77", input$bone_tx, input$bone_fu))
+  output$bone_obfast <- renderPlot(make_detail_plot(bone_data(), "OBfast",   "OB fast (Active)",   "cells","#D95F02", input$bone_tx, input$bone_fu))
+  output$bone_obslow <- renderPlot(make_detail_plot(bone_data(), "OBslow",   "OB slow (Lining)",   "cells","#7570B3", input$bone_tx, input$bone_fu))
+  output$bone_obtot  <- renderPlot(make_detail_plot(bone_data(), "OB_total", "OB Total",           "cells","#E7298A", input$bone_tx, input$bone_fu))
+  output$bone_oc     <- renderPlot(make_detail_plot(bone_data(), "OC",       "Osteoclasts (OC)",   "cells","#66A61E", input$bone_tx, input$bone_fu))
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 6: Signaling Pathways
+  # ══════════════════════════════════════════════════════════════════════════
+
+  sig_data <- eventReactive(input$sig_run, {
+    showNotification("Running simulation ...", type = "message", duration = NULL, id = "sig_note")
+    res <- tryCatch(
+      run_sim(as.numeric(input$sig_dose), input$sig_tx, input$sig_fu),
+      error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL }
+    )
+    removeNotification("sig_note")
+    if (!is.null(res)) showNotification("Done!", type = "message", duration = 2)
+    res
+  })
+
+  output$sig_rankl  <- renderPlot(make_detail_plot(sig_data(), "L",       "RANKL",              "pM", "#E41A1C", input$sig_tx, input$sig_fu))
+  output$sig_rank   <- renderPlot(make_detail_plot(sig_data(), "RNK",     "RANK",               "pM", "#377EB8", input$sig_tx, input$sig_fu))
+  output$sig_opg    <- renderPlot(make_detail_plot(sig_data(), "Oopg",    "OPG",                "pM", "#4DAF4A", input$sig_tx, input$sig_fu))
+  output$sig_mcmplx <- renderPlot(make_detail_plot(sig_data(), "Mcmplx",  "RANKL-RANK Complex", "pM", "#984EA3", input$sig_tx, input$sig_fu))
+  output$sig_ncmplx <- renderPlot(make_detail_plot(sig_data(), "Ncmplx",  "RANKL-OPG Complex",  "pM", "#FF7F00", input$sig_tx, input$sig_fu))
+  output$sig_tgfb   <- renderPlot(make_detail_plot(sig_data(), "TGFB",    "TGF-\u03b2 (Latent)","AU", "#A65628", input$sig_tx, input$sig_fu))
+  output$sig_tgfba  <- renderPlot(make_detail_plot(sig_data(), "TGFBact", "TGF-\u03b2 (Active)","AU", "#F781BF", input$sig_tx, input$sig_fu))
+  output$sig_runx2  <- renderPlot(make_detail_plot(sig_data(), "RX2",     "RUNX2",              "AU", "#1F78B4", input$sig_tx, input$sig_fu))
+  output$sig_creb   <- renderPlot(make_detail_plot(sig_data(), "CREB",    "CREB",               "AU", "#33A02C", input$sig_tx, input$sig_fu))
+  output$sig_bcl2   <- renderPlot(make_detail_plot(sig_data(), "BCL2",    "BCL2",               "AU", "#FB9A99", input$sig_tx, input$sig_fu))
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 7: Multi-Dose Comparison
+  # ══════════════════════════════════════════════════════════════════════════
+
+  cmp_data <- eventReactive(input$cmp_run, {
+    doses <- as.numeric(input$cmp_doses)
+    if (length(doses) == 0) {
+      showNotification("Select at least one dose.", type = "warning"); return(NULL)
+    }
+    showNotification("Running comparison ...", type = "message", duration = NULL, id = "cmp_note")
+    all_res <- tryCatch({
+      do.call(rbind, lapply(doses, function(d) run_sim(d, input$cmp_tx, input$cmp_fu)))
+    }, error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL })
+    removeNotification("cmp_note")
+    if (!is.null(all_res)) showNotification("Done!", type = "message", duration = 2)
+    all_res
+  })
+
+  # Selected biomarker comparison
+  output$cmp_plot <- renderPlot({
     df <- cmp_data(); if (is.null(df)) return(NULL)
-    tx_end <- input$tx_mo_cmp
-    ggplot(df, aes(months, .data[[yvar]], colour = dose_label)) +
-      geom_line(linewidth = 1) +
-      {if (input$fu_mo_cmp > 0) geom_vline(xintercept = tx_end,
-                                             linetype = "dashed", colour = "grey50")} +
-      geom_hline(yintercept = 0, linetype = "dotted") +
-      labs(title = title_str, x = "Time (months)", y = ylab, colour = "Dose") +
-      theme_bw(base_size = 14) + theme(legend.position = "bottom")
-  }
+    var <- input$cmp_var
+    bm <- Filter(function(b) b$var == var, BIOMARKERS)
+    label <- if (length(bm) > 0) bm[[1]]$label else var
+    unit  <- if (length(bm) > 0) bm[[1]]$unit  else ""
+    make_comparison_plot(df, var, label, unit, input$cmp_tx, input$cmp_fu)
+  })
 
-  output$cmp_bmd  <- renderPlot(make_cmp_plot("BMD_chg_pct",  "BMD Change (%)",
-                                               "BMD -- Multi-dose Comparison"))
-  output$cmp_ctx  <- renderPlot(make_cmp_plot("CTX_chg_pct",  "CTX Change (%)",
-                                               "CTX -- Multi-dose Comparison"))
-  output$cmp_p1np <- renderPlot(make_cmp_plot("P1NP_chg_pct", "P1NP Change (%)",
-                                               "P1NP -- Multi-dose Comparison"))
+  # Fixed clinical comparisons
+  output$cmp_bmd  <- renderPlot(make_comparison_plot(cmp_data(), "BMD_chg_pct",  "BMD",  "% change", input$cmp_tx, input$cmp_fu))
+  output$cmp_ctx  <- renderPlot(make_comparison_plot(cmp_data(), "CTX_chg_pct",  "CTX",  "% change", input$cmp_tx, input$cmp_fu))
+  output$cmp_p1np <- renderPlot(make_comparison_plot(cmp_data(), "P1NP_chg_pct", "P1NP", "% change", input$cmp_tx, input$cmp_fu))
 
-  output$tbl3_cmp <- renderDT({
+  output$cmp_table <- renderDT({
     df <- cmp_data(); if (is.null(df)) return(NULL)
     pts <- c(6, 12, 18, 24)
     pts <- pts[pts <= max(df$months)]
@@ -706,17 +1075,25 @@ server <- function(input, output, session) {
       formatRound(2:ncol(tbl), 2)
   })
 
-  # ========== Tab 4 : Validation ===========================================
+  # ══════════════════════════════════════════════════════════════════════════
+  #  Tab 8: Validation
+  # ══════════════════════════════════════════════════════════════════════════
 
-  output$tbl_paper_target <- renderDT({
+  # Auto-run validation on startup
+  val_data <- reactive({
+    tryCatch({
+      do.call(rbind, lapply(c(150, 400), function(d) run_sim(d, 24, 0)))
+    }, error = function(e) NULL)
+  })
+
+  output$val_paper <- renderDT({
     datatable(paper_target, rownames = FALSE, options = list(dom = "t")) %>%
       formatRound(2:5, 2)
   })
 
-  output$tbl_model_pred <- renderDT({
-    df <- cmp_data(); if (is.null(df)) return(NULL)
+  output$val_model <- renderDT({
+    df <- val_data(); if (is.null(df)) return(NULL)
     pts <- c(6, 12, 18, 24)
-    pts <- pts[pts <= max(df$months)]
     doses <- unique(df$dose_label)
     tbl <- do.call(rbind, lapply(doses, function(dl) {
       sub <- df[df$dose_label == dl, ]
